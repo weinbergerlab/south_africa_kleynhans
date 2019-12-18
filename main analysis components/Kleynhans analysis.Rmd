@@ -1,5 +1,5 @@
 ---
-title: "Klenhans analysis"
+title: "Kleynhans analysis"
 author: "Dan Weinberger"
 date: "12/18/2019"
 output: html_document
