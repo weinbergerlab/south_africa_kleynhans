@@ -1,0 +1,479 @@
+---
+author: "Daniel Weinberger"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+  sensitivity: TRUE
+  crossval: FALSE
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.height = 3,
+  fig.width = 5,
+  fig.align = "center", 
+  dpi=300, 
+	out.width="600px"
+)
+```
+
+---
+
+```{r setup_packages, include=FALSE, echo=TRUE}
+#Install the package
+#library(devtools)
+#devtools::install_github('https://github.com/weinbergerlab/InterventionEvaluatR') 
+library(knitr)
+library(plyr)
+library(InterventionEvaluatR)
+library(rjags)
+library(coda)
+library(HDInterval)
+library(lubridate)
+library(pbapply)
+library(parallel)
+```
+
+---
+title: "Estimated change associated with the introduction of vaccine in South Africa"
+---
+
+---
+## Important note
+This Rmd file contains analyses of the data from S Africa. It uses a slightly different model (Poisson) than the one described in Kleynhans et al. To see those results, see the synthetic_control_run.R file
+
+```{r viewdata}
+   sa1<-read.csv('./Data/RSA.csv')
+
+   #Filter covariates that have no variance
+   sa.covars<-sa1[, -which(names(sa1) %in% c('Pneum','date','age')  )]
+   sa.covars$index<-1:nrow(sa.covars)
+   sa1.spl<-split(sa.covars, sa1$age)
+   variance.vars<-lapply(sa1.spl, function(x) apply(x[1:123,], 2, var)  ) #look in pre-vax period
+      for(i in 1:length(sa1.spl)){
+     sa1.spl[[i]]<-sa1.spl[[i]][,-which(variance.vars[[i]]==0)]
+   }
+   sa.covars<-rbind.fill(sa1.spl) #cobine back together
+   sa.covars<-sa.covars[order(sa.covars$index),]
+   sa.covars$index<-NULL
+   sa2<-cbind.data.frame(sa1[, which(names(sa1) %in% c('Pneum','date','age')  )], sa.covars)
+   sa2$date<-as.Date(sa1$date, '%Y-%m-%d' ) 
+   
+   exclude_covar <- c('AllRes', 	'PI', 	'POth', 	'AllDiar', 	 	'Menin', 	'BactMenin', 	'Bact', 	'OtMed', 	'Mast',	'SeptArthr', "denom", "A20_B99_excl_bac", "A16", "A17", "A18", "A19", "R00_R09", "R10_R19", "R20_R39", "R40_R49", "R50_R69", "R70_R94", "R95_R99", "D50_D89")      
+
+   sa2<-sa2[,-which(names(sa2) %in% exclude_covar)]
+   
+ 
+```
+
+#Plot time series
+```{r, fig.width=8}
+unique(sa2$age)
+age_subset<-sa2[sa2$age=='19-39 years',]
+par(mfrow=c(1,2))
+plot(age_subset$Pneum, type='l', bty='l')
+abline(v=123, col='gray', lty=2)
+plot(age_subset$R00_R99, type='l', bty='l')
+abline(v=123, col='gray', lty=2)
+
+
+matplot(scale(log(age_subset[,4:20]+0.5)), type='l', bty='l')
+abline(v=123, col='gray', lty=2)
+
+```
+
+
+# Intervention EvaluatR Package
+
+## Set parameters for analysis
+
+Here we need to set a few parameters. We Use the evaluatr.init() function to specify the name of the dataset, the date at which the vaccine is introduced, the date at which we want to begin evaluating the vaccine (typically 1-2 year after vaccine introduction). We also provide some information on the dataset, sch as whether the data are monthly or quarterly (n_seasons), the variable names for the grouping variable, the date variable, the outcome variable, and the denominator variable (if any).
+
+```{r setup_data, echo=TRUE}
+
+analysis <- evaluatr.init(
+  country = "SAfrica", data = sa2,
+  post_period_start = "2009-04-01", #First 'post-intervention' month is Jan 2012
+  eval_period_start = "2012-01-01", #We ignore first 2 years of data to allow for vaccine ramp up
+  eval_period_end = "2016-12-01", #The evaluation period lasts 2 years
+  n_seasons = 12, #This is monthly data, so select 12
+  year_def = "cal_year", # we are in southern hemisphere, so aggregate results by calendar year (Jan-Dec)
+  group_name = "age",  #Strata categry name
+  date_name = "date", #Date variable name
+  outcome_name = "Pneum", #Outcome variable name
+  denom_name = "denom", #Denominator variable name
+  set.burnN=20000,
+  set.sampleN=10000
+)
+set.seed(1)
+```
+
+
+
+## Run a simple analysis controlling for 1 control variable at a time
+
+Before getting into more complicated analyses, we will first try to fit a simple Poisson regression model (with overdispersion) where we adjust for seasonality and 1 control variable at a time. this allows us to see how the use of different controls influences the results
+
+The results are ordered by goodness of fit (based on AIC scores), with best fitting covariates on top.
+```{r univariate, fig.width=3, fig.height=5}
+ glmer_results= evaluatr.univariate(analysis)
+ lapply(glmer_results,evaluatr.univariate.plot)
+```
+
+Try a simple analysis
+```{r}
+
+
+ds1<-analysis$input_data[analysis$input_data$age=='80 years and above',]
+covars<-ds1[,4:ncol(ds1)]
+covars<-apply(covars,2, function(x) scale(log(x+0.5))   )
+ds2<-cbind.data.frame(ds1[,1:3],covars)
+ds2$month<-month(ds2$date)
+ds2$outcome<- ds2$Pneum
+dates<-unique(ds2$date)
+ds2$outcome.pre<-ds2$outcome
+ds2$outcome.pre[dates > analysis$pre_period_end] <-NA
+mod1<- glm(outcome.pre ~ as.factor(month)+  R00_R99 +J00_J99_excl_PI_bron  +I00_I99, family='poisson', data=ds2)
+summary(mod1)
+pred1<-predict(mod1, type='response', newdata=ds2)
+sum.post.obs<- sum(ds2$outcome[dates > analysis$pre_period_end])
+sum.post.pred<- sum(pred1[dates > analysis$pre_period_end])
+rr1<-sum.post.obs/sum.post.pred
+
+
+
+ds2$log.outcome.pre<-log(ds2$outcome.pre+0.5)
+mod2<- glm(log.outcome.pre ~as.factor(month) +   R00_R99 +J00_J99_excl_PI_bron  +I00_I99 , family='gaussian', data=ds2)
+summary(mod2)
+pred2<-exp(predict(mod2, type='response', newdata=ds2))
+sum.post.obs<- sum(ds2$outcome[dates > analysis$pre_period_end])
+sum.post.pred2<- sum(pred2[dates > analysis$pre_period_end])
+rr2<-sum.post.obs/sum.post.pred2
+
+rr1
+rr2
+
+
+matplot(covars[,c('R00_R99','J00_J99_excl_PI_bron','I00_I99')], type='l')
+```
+
+
+## Run the main analysis
+Save the results in object 'impact_results'
+```{r main analysis, include = FALSE}
+impact_results = evaluatr.impact(analysis)
+```
+
+##Run sensitivity analyses
+Sequentially drop the top 1,2, or 3 variables in synthetic controls analysis
+```{r sensitivity_analyses, include = FALSE}
+if (params$sensitivity) {
+  sensitivity_results <- evaluatr.sensitivity(analysis)
+}
+```
+
+
+#`r params$country` Results
+
+
+```{r sparse}
+if (!is.null(names(analysis$sparse_groups[analysis$sparse_groups])) && length(names(analysis$sparse_groups[analysis$sparse_groups])) != 0) {
+  kable(data.frame("Sparse Groups" = names(analysis$sparse_groups[analysis$sparse_groups]), check.names = FALSE), align = "c")
+}
+```
+
+## Check model convergence
+These models are fit using Markov Chain Monte Carlo (MCMC). It is important to evaluate the convergence of the model. A quick way to check this is to evaluate the trace plots for rate ratio estimates from the synthetic controls model (or for the other model variants). We use Geweke's diagnostic, which tests whether the mean estimate for the rate ratio in the first 10% of the iterations is equal to the mean estimate for the rate ration in the last 50% of the iterations. If the model has not converged, you might need to add more iterations or a longer burn in period
+```{r}
+all.traces<-sapply(impact_results,'[[', 'rr_iter')
+cats<-dimnames(all.traces[[1]])[[1]]
+all.converge.status<-sapply(impact_results,'[[', 'converge')
+for(j in c('full','time','pca')){
+for(i in 1: nrow(all.traces[[1]])){
+   plot(all.traces[[j]][i,], type='l', main=paste0(j,' ',cats[i],' ' ,all.converge.status[[j]][i,2] ), bty='l', ylim=c(0.2,2))
+}
+}
+```
+
+##combine estimates
+
+```{r Comparison of estimates from different models}
+if (params$crossval) {
+  kable(cbind.data.frame(crossval_results$rr_mean_stack_intervals, impact_results$full$rr_mean_intervals, impact_results$time$rr_mean_intervals, impact_results$time_no_offset$rr_mean_intervals, impact_results$its$rr_mean_intervals, impact_results$pca$rr_mean_intervals), align = "c")
+} else {
+  kable(cbind.data.frame(impact_results$best$rr_mean_intervals, impact_results$full$rr_mean_intervals, impact_results$time$rr_mean_intervals, impact_results$time_no_offset$rr_mean_intervals, impact_results$its$rr_mean_intervals, impact_results$pca$rr_mean_intervals), align = "c")
+}
+```
+
+##Plot of Rate ratios, with size proportional to cross validation weights
+```{r mainplot1, echo=FALSE}
+plots <- evaluatr.plots(analysis)
+plots$summary
+```
+
+
+##Number of variables selected in SC analysis
+```{r modelsize}
+kable(analysis$model_size, col.names = c("Model Size"))
+```
+
+##Inclusion Probabilities
+```{r incl, include = FALSE}
+incl_probs <- NULL
+for (group in analysis$groups) {
+  incl_prob <- impact_results$full$groups[[group]]$inclusion_probs[-c(1:(analysis$n_seasons - 1)), ]
+  incl_prob <- incl_prob[order(-incl_prob$inclusion_probs), ]
+  incl_prob <- incl_prob[c(1:3), ]
+  incl_prob2 <- incl_prob[, 2]
+  incl_prob_names <- incl_prob[, 1]
+  incl_prob3 <- data.frame("Group" = group, "Greatest Inclusion Variable" = incl_prob_names[1], "Greatest Inclusion Probability" = incl_prob2[1], "Second Greatest Inclusion Variable" = incl_prob_names[2], "Second Greatest Inclusion Probability" = incl_prob2[2], "Third Greatest Inclusion Variable" = incl_prob_names[3], "Third Greatest Inclusion Probability" = incl_prob2[3], check.names = FALSE)
+  incl_probs <- rbind(incl_probs, incl_prob3)
+}
+rownames(incl_probs) <- NULL
+```
+
+```{r incl_table}
+kable(incl_probs, align = "c")
+```
+
+## Weight Sensitivity Analysis
+```{r sensitivity}
+if (exists("sensitivity_results")) {
+  kable(sensitivity_results$sensitivity_table_intervals, align = "c")
+}
+```
+
+
+## Plot Observed vs expected monthly time series
+```{r plots, results = 'asis', plot.width=5, plot.height=12}
+for (group in names(plots$groups)) {
+      par(mfrow=c(4,1))
+      print(plots$groups[[group]]$pred_full )
+     # print(plots$groups[[group]]$pred_best )
+      #print(plots$groups[[group]]$pred_time )
+      #print(plots$groups[[group]]$pred_pca )
+}
+```
+
+## Plot Observed vs expected yearly time series
+```{r plots2, results = 'asis', plot.width=5, plot.height=12}
+for (group in names(plots$groups)) {
+      par(mfrow=c(4,1))
+      print(plots$groups[[group]]$pred_full_agg )
+      print(plots$groups[[group]]$pred_best_agg )
+      print(plots$groups[[group]]$pred_time_agg )
+      print(plots$groups[[group]]$pred_pca_agg )
+}
+```
+
+## Plot cumulative cases prevented
+Estimated using the 'best' model, between SC and STL+PCA
+
+```{r plots3, results = 'asis', plot.width=5, plot.height=12}
+for (group in names(plots$groups)) {
+      par(mfrow=c(4,1))
+      print(plots$groups[[group]]$cumsum_prevented )
+}
+```
+
+## Print results
+```{r save_results, echo=FALSE}
+output_file <- "Results" # Directory where results will be saved.
+output_file <- paste0(output_file, "_", analysis$country, "_", format(Sys.time(), "%Y-%m-%d-%H%M%S"), ".Rds")
+evaluatr.save(analysis, output_file)
+```
+
+
+Try AR1 horseshoe model. The AR1 model seems to have an issue where the AR1 component competes with the regression piece and displaces the regresison effect. This is undesirable here because we want the regressors to explain the trends, not AR1
+```{r}
+call.jags.mod<-function(ds.in){  
+  exclude.cols<-c(analysis$group_name, analysis$outcome_name, analysis$date_name)
+  x<-ds.in[,-which(names(ds.in) %in% exclude.cols)]
+    
+  #Filter columsn with 0 variations in the covariate in the pre-vax period
+  x.var<-apply(x,2, function(xx) var(xx[ds.in[,analysis$date_name]<analysis$post_period[1]] ))  
+  x.var[is.na(x.var)]<-0
+  x<-x[,x.var>0] 
+  
+  x.scale<-apply(x,2, function(z) scale(log(z+0.5))) 
+  y<-ds.in[,analysis$outcome_name] 
+  ds2<-cbind.data.frame(y, x.scale) 
+  names(ds2)<-c(analysis$outcome_name,names(x)) 
+  ds2.pre<-ds2[ds.in[,analysis$date_name]<analysis$post_period[1] ,] 
+  ds3<-ds2 
+  ds3[,analysis$outcome_name][ds.in[,analysis$date_name]>=analysis$post_period[1]]<-NA 
+  months<-month(ds.in[,analysis$date_name]) 
+  month.mat<-dummies::dummy(months) 
+  month.mat<-month.mat[,-1]
+  month.mat<-cbind(rep(1,nrow(month.mat)), month.mat) #add intercept
+  month.mat.pre<- month.mat[ds.in[,analysis$date_name]<analysis$post_period[1] ,]
+  
+  mod.txt<- source('./jags/Non_spatial-Non_lagged-iid.txt')
+  mod1<-nonspace_nonlag(burnin=70000, 
+                        samples=40000,
+                        thin=1,
+                        chains=1,
+                        regularize=TRUE, 
+                        dic=FALSE,
+                        n_full=length(ds3[,analysis$outcome_name]),
+                        n_modeling=nrow(ds2.pre),
+                        y_modeling=ds3[,analysis$outcome_name],
+                        offset=rep(0, length(y)) ,
+                        z=month.mat,  #parameters not being shrunk
+                        x=ds3[,-1]
+                        )
+  
+  posterior_samples.all<-do.call(rbind,mod1[[1]])
+  post_means<-apply(posterior_samples.all, 2, median)
+  sample.labs<-names(post_means)
+  ci<-t(hdi(posterior_samples.all, credMass = 0.95))
+  row.names(ci)<-sample.labs
+  names(post_means)<-sample.labs
+  post.combo<-cbind(post_means,ci)
+  
+  post.combo.y<-post.combo[grep('Y_pred', dimnames(post.combo)[[1]]),]
+  post.combo.beta<-cbind.data.frame(post.combo[grep('beta', dimnames(post.combo)[[1]]),],dimnames(x)[[2]])
+  
+  post.combo.phi<- post.combo[grep('phi', dimnames(post.combo)[[1]]),]
+
+  # plot(y=1:nrow(post.combo.beta), x=post.combo.beta[,'post_means'], xlim=range(post.combo.beta[,1:3]), bty='l')
+  # arrows(y0=1:nrow(post.combo.beta) ,x0=post.combo.beta[,2], x1=post.combo.beta[,3], length=0)
+  # abline(v=0, col='gray', lty=2)
+  # text(y=1:nrow(post.combo.beta), x=post.combo.beta[,'post_means']+0.1,dimnames(x)[[2]] , col='gray')
+  
+  #plot for post-vax period
+  # matplot(post.combo.y, type='l')
+  #  points(ds1$sALRI[(nrow(ds2.pre)+1):nrow(ds1)])
+  # 
+    log.rr.pointwise<- log((ds.in[(nrow(ds2.pre)+1):nrow(ds.in),analysis$outcome_name]+0.5)/(post.combo.y+0.5))
+   # matplot(log.rr, type='l', col='gray', lty=c(2,1,2))
+   # abline(h=0, col='red')
+   
+   length.rollout<-round(as.numeric((analysis$eval_period[1]-analysis$post_period[1]  )/30.3))
+   post.samples<-posterior_samples.all[,-c(1:length.rollout)]
+   post.samples.y<- post.samples[,grep('Y_pred', dimnames(post.samples)[[2]])]
+
+   post.samples.sum<-apply(post.samples,1,sum)
+   obs.post.sum<- sum(ds2[,analysis$outcome_name][ds.in[,analysis$date_name]>=analysis$post_period[1]][-c(1:length.rollout)])
+   rr.agg<-obs.post.sum/post.samples.sum
+   rr.q<-quantile(rr.agg, probs=c(0.025, 0.5, 0.975))
+   output.list<-list('rr.samples'=rr.agg,'rr.q'=rr.q,'log.rr.pointwise.q'=log.rr.pointwise,'betas'=post.combo.beta,'rr.agg.iter'=rr.agg,'phi'=post.combo.phi)
+}
+```
+
+```{r}
+n_cores<-7
+grp.keep<-c("Less than one month", "1-11 months", "1-4 years", "5-7 years", "8-18 years","19-39 years","65-79 years" )
+
+ds.age.spl<-split(sa2, sa2$age)
+ds.age.spl<-ds.age.spl[grp.keep]
+
+  cl <- makeCluster(n_cores)
+  clusterEvalQ(cl, {
+    library(lubridate, quietly = TRUE)
+    library(HDInterval, quietly = TRUE)
+  })
+  clusterExport(cl, c('call.jags.mod','analysis'), environment())
+  
+  mod1<-pblapply(cl = cl,X=ds.age.spl,FUN=call.jags.mod)
+stopCluster(cl)
+
+rr.samples<-sapply(mod1, '[[', 'rr.samples',simplify='array')
+phi<-sapply(mod1, '[[', 'phi',simplify='array')
+
+```
+
+```{r}
+rr.summary<-t(apply(rr.samples[30000:40000,],2,quantile, probs=c(0.025,0.5,0.975)))
+rr.summary
+```
+
+```{r}
+matplot(phi[,,2 ], type='l')
+abline(h=0)
+
+```
+
+Length of burn in required varies by dataset. many are fine with 15-20000 (+10K original burn). By 0K (+10K original burn) all look good. So could prob get away with a burn of 60K + 10K samples (70K)?
+```{r}
+apply(rr.samples[30000:40000,],2, function(x) plot(x,type='l'))
+```
+
+
+```{r}
+betas<-sapply(mod1, '[[', 'betas',simplify=F)
+betas<-lapply(betas, function(x) x[order(-x$post_means),])
+names(betas)
+betas[[5 ]]
+```
+
+
+
+Try pogit model with alterative priors
+```{r}
+source('./jags/docausalimpact_play_prior.R')
+variants='full'
+variant='full'
+results1<-vector('list',length(analysis$.private$variants))
+#grp.keep<-c("Less than one month", "1-11 months", "1-4 years", "5-7 years", "8-18 years","19-39 years","65-79 years" )
+
+analysis$.private$n_cores=7
+ptm <- proc.time()
+
+cl <- makeCluster(analysis$.private$n_cores)
+  clusterEvalQ(cl, {
+    library(pogit, quietly = TRUE)
+    library(lubridate, quietly = TRUE)
+    library(RcppRoll, quietly = TRUE)
+    library(HDInterval, quietly = TRUE)
+    library(plyr, quietly = TRUE)
+    
+  })
+  clusterExport(cl, c('doCausalImpactPriorPlay','rrPredQuantiles','cumsum_func'), environment())
+    analysis$.private$variants = analysis$.private$variants[variants]
+
+    incrementProgressPart(analysis)
+    results1[[variant]]$groups <- setNames(
+      pblapply(
+        cl = cl,
+        analysis$.private$data[[variant]],
+        FUN = doCausalImpactPriorPlay,
+        intervention_date=analysis$intervention_date,
+        n_seasons=analysis$n_seasons,
+        var.select.on = analysis$.private$variants[[variant]]$var.select.on,
+        time_points = analysis$time_points,
+        trend = analysis$.private$variants[[variant]]$trend,
+        burnN=analysis$set.burnN,
+        sampleN=analysis$set.sampleN,
+        crossval.stage = FALSE,
+        analysis=analysis
+      ),
+grp.keep
+)
+  
+  stopCluster(cl)
+  proc.time() - ptm
+
+```
+
+
+
+```{r}
+ages<-unique(analysis$input_data$age)
+rr<-t(sapply(results1[[variant]]$groups, function(x) x$quantiles$rr))
+row.names(rr)<-ages
+rr
+```
+
+```{r}
+probs<-t(lapply(results1[[variant]]$groups, function(x) x$impact$inclusion_probs))
+names(probs)<-ages
+probs[[8]]
+```
+
+
