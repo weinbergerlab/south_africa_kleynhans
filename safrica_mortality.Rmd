@@ -107,7 +107,7 @@ analysis <- evaluatr.init(
   date_name = "date", #Date variable name
   outcome_name = "Pneum", #Outcome variable name
   denom_name = "denom", #Denominator variable name
-  set.burnN=20000,
+  set.burnN=5000,
   set.sampleN=10000
 )
 set.seed(1)
@@ -125,7 +125,7 @@ The results are ordered by goodness of fit (based on AIC scores), with best fitt
  lapply(glmer_results,evaluatr.univariate.plot)
 ```
 
-Try a simple analysis
+Compare a simple Poisson model with a simple log-Gaussian model
 ```{r}
 
 
@@ -388,6 +388,9 @@ phi<-sapply(mod1, '[[', 'phi',simplify='array')
 
 ```
 
+
+
+
 ```{r}
 rr.summary<-t(apply(rr.samples[30000:40000,],2,quantile, probs=c(0.025,0.5,0.975)))
 rr.summary
@@ -401,7 +404,7 @@ abline(h=0)
 
 Length of burn in required varies by dataset. many are fine with 15-20000 (+10K original burn). By 0K (+10K original burn) all look good. So could prob get away with a burn of 60K + 10K samples (70K)?
 ```{r}
-apply(rr.samples[30000:40000,],2, function(x) plot(x,type='l'))
+apply(rr.samples,2, function(x) plot(x,type='l'))
 ```
 
 
@@ -409,71 +412,7 @@ apply(rr.samples[30000:40000,],2, function(x) plot(x,type='l'))
 betas<-sapply(mod1, '[[', 'betas',simplify=F)
 betas<-lapply(betas, function(x) x[order(-x$post_means),])
 names(betas)
-betas[[5 ]]
-```
-
-
-
-Try pogit model with alterative priors
-```{r}
-source('./jags/docausalimpact_play_prior.R')
-variants='full'
-variant='full'
-results1<-vector('list',length(analysis$.private$variants))
-#grp.keep<-c("Less than one month", "1-11 months", "1-4 years", "5-7 years", "8-18 years","19-39 years","65-79 years" )
-
-analysis$.private$n_cores=7
-ptm <- proc.time()
-
-cl <- makeCluster(analysis$.private$n_cores)
-  clusterEvalQ(cl, {
-    library(pogit, quietly = TRUE)
-    library(lubridate, quietly = TRUE)
-    library(RcppRoll, quietly = TRUE)
-    library(HDInterval, quietly = TRUE)
-    library(plyr, quietly = TRUE)
-    
-  })
-  clusterExport(cl, c('doCausalImpactPriorPlay','rrPredQuantiles','cumsum_func'), environment())
-    analysis$.private$variants = analysis$.private$variants[variants]
-
-    incrementProgressPart(analysis)
-    results1[[variant]]$groups <- setNames(
-      pblapply(
-        cl = cl,
-        analysis$.private$data[[variant]],
-        FUN = doCausalImpactPriorPlay,
-        intervention_date=analysis$intervention_date,
-        n_seasons=analysis$n_seasons,
-        var.select.on = analysis$.private$variants[[variant]]$var.select.on,
-        time_points = analysis$time_points,
-        trend = analysis$.private$variants[[variant]]$trend,
-        burnN=analysis$set.burnN,
-        sampleN=analysis$set.sampleN,
-        crossval.stage = FALSE,
-        analysis=analysis
-      ),
-grp.keep
-)
-  
-  stopCluster(cl)
-  proc.time() - ptm
-
-```
-
-
-
-```{r}
-ages<-unique(analysis$input_data$age)
-rr<-t(sapply(results1[[variant]]$groups, function(x) x$quantiles$rr))
-row.names(rr)<-ages
-rr
-```
-
-```{r}
-probs<-t(lapply(results1[[variant]]$groups, function(x) x$impact$inclusion_probs))
-names(probs)<-ages
-probs[[8]]
+betas[[2 ]]
 ```
 
 
