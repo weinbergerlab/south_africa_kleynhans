@@ -37,6 +37,7 @@ library(HDInterval)
 library(lubridate)
 library(pbapply)
 library(parallel)
+library(plyr)
 ```
 
 ---
@@ -98,9 +99,9 @@ Here we need to set a few parameters. We Use the evaluatr.init() function to spe
 
 analysis <- evaluatr.init(
   country = "SAfrica", data = sa2,
-  post_period_start = "2009-04-01", #First 'post-intervention' month is Jan 2012
-  eval_period_start = "2012-01-01", #We ignore first 2 years of data to allow for vaccine ramp up
-  eval_period_end = "2016-12-01", #The evaluation period lasts 2 years
+  post_period_start = "2009-04-01", 
+  eval_period_start = "2010-04-01", 
+  eval_period_end = "2016-12-01", 
   n_seasons = 12, #This is monthly data, so select 12
   year_def = "cal_year", # we are in southern hemisphere, so aggregate results by calendar year (Jan-Dec)
   group_name = "age",  #Strata categry name
