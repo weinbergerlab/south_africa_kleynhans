@@ -6,6 +6,7 @@
 rm(list = ls(all = TRUE))
 gc()
 
+
 #Set the working directory
 #This step only works as written if this file is run using the source() command. Otherwise, skip this step and set manually.
 
@@ -20,7 +21,7 @@ gc()
 #}
 #setwd(file.path(paste0(desktop,'/synthetic-control-master/main analysis components/')))
 
-#setwd("~/Not Backing Up to Google/PCV Impact Mortality/Analysis/Synthetic Controls analysis/Corrected code received 31Jan19/synthetic-control-master/main analysis components")
+setwd("C:/Users/dmw63/Desktop/My documents h/SAfrica mortality/south_africa_kleynhans/main analysis components")
 
 #Used to check for relevant packages and update them if out of date or install them if not installed.
 update_packages  <- TRUE #Whether to update outdated packages.
@@ -35,8 +36,8 @@ exclude_group <- c()      #User-defined list of groups to exclude from analyses.
 code_change   <- FALSE
 
 
-input_directory  <- '' #Directory (or URL) containing input data file. JK: Leave this blank and just copy data directly into the file with the R files
-output_directory <- '..\\Results/Results'   #Directory where results will be saved.
+input_directory  <- '../Data/' #Directory (or URL) containing input data file. JK: Leave this blank and just copy data directly into the file with the R files
+output_directory <- '../Results/Results'   #Directory where results will be saved.
 output_directory <- paste(output_directory, format(Sys.time(), '%Y-%m-%d-%H%M%S'), '/', sep = '')                     #Adds a subfolder to output directory to organize results by date and time run.
 file_name        <- 'RSA.csv'  #Name of file containing data for analysis. Must be a .csv file.
 
@@ -60,3 +61,4 @@ eval_period       <- as.Date(c('2012-01-01', '2016-12-01')) #Range over which ra
 
 #Run analysis and generate HTML report
 source('synthetic_control_report.R', local = TRUE)
+
