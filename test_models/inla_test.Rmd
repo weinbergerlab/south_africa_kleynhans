@@ -1,0 +1,185 @@
+---
+title: "inla-test"
+author: "Dan Weinberger"
+date: "1/3/2020"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.height = 3,
+  fig.width = 5,
+  fig.align = "center", 
+  dpi=300, 
+	out.width="600px"
+)
+```
+
+---
+
+```{r setup_packages, include=FALSE, echo=TRUE}
+#Install the package
+#library(devtools)
+#devtools::install_github('https://github.com/weinbergerlab/InterventionEvaluatR') 
+library(knitr)
+library(plyr)
+library(InterventionEvaluatR)
+library(rjags)
+library(coda)
+library(HDInterval)
+library(lubridate)
+library(pbapply)
+library(parallel)
+library(plyr)
+```
+
+---
+title: "Estimated change associated with the introduction of vaccine in South Africa"
+---
+
+---
+## Important note
+This Rmd file contains analyses of the data from S Africa. It uses a slightly different model (Poisson) than the one described in Kleynhans et al. To see those results, see the synthetic_control_run.R file
+
+```{r viewdata}
+   sa1<-read.csv('./Data/RSA.csv')
+
+   #Filter covariates that have no variance
+   sa.covars<-sa1[, -which(names(sa1) %in% c('Pneum','date','age')  )]
+   sa.covars$index<-1:nrow(sa.covars)
+   sa1.spl<-split(sa.covars, sa1$age)
+   variance.vars<-lapply(sa1.spl, function(x) apply(x[1:123,], 2, var)  ) #look in pre-vax period
+      for(i in 1:length(sa1.spl)){
+     sa1.spl[[i]]<-sa1.spl[[i]][,-which(variance.vars[[i]]==0)]
+   }
+   sa.covars<-rbind.fill(sa1.spl) #cobine back together
+   sa.covars<-sa.covars[order(sa.covars$index),]
+   sa.covars$index<-NULL
+   sa2<-cbind.data.frame(sa1[, which(names(sa1) %in% c('Pneum','date','age')  )], sa.covars)
+   sa2$date<-as.Date(sa1$date, '%Y-%m-%d' ) 
+   
+   exclude_covar <- c('AllRes', 	'PI', 	'POth', 	'AllDiar', 	 	'Menin', 	'BactMenin', 	'Bact', 	'OtMed', 	'Mast',	'SeptArthr', "denom", "A20_B99_excl_bac", "A16", "A17", "A18", "A19", "R00_R09", "R10_R19", "R20_R39", "R40_R49", "R50_R69", "R70_R94", "R95_R99", "D50_D89", "R00_R99")      
+
+   sa2<-sa2[,-which(names(sa2) %in% exclude_covar)]
+   
+ 
+```
+
+
+
+INLA AR1
+```{r}
+#install.packages("INLA", repos=c(getOption("repos"), INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+library(INLA)
+#age.select<-unique(sa2$age)[3]
+inla.ar1.func<-function(age.select){
+  x<-sa2[sa2$age==age.select,4:40]
+  y<-  sa2[sa2$age==age.select,"Pneum"]
+  dates<-unique(sa2$date)
+  y.pre<-y
+  y.pre[dates>=analysis$intervention_date]<-NA
+  #Filter columsn with 0 variations in the covariate in the pre-vax period
+  x.var<-apply(x,2, function(xx) var(xx))  
+  x.var[is.na(x.var)]<-0
+  x<-x[,x.var>0] 
+  
+  x.scale<-apply(x,2, function(z) scale(log(z+0.5))) 
+  
+pca1<- prcomp(x.scale, center = TRUE,scale. = TRUE)
+
+pcs<-pca1$x
+rotation<-pca1$rotation
+
+mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'PC1'],'pc2'=pcs[,'PC2'],'pc3'=pcs[,'PC3'],'pc4'=pcs[,'PC4'] )
+#mod1<- glm(y.pre ~ pc1+pc2 +month, family='quasipoisson', data=mod.df)
+mod.df$t<-1:nrow(mod.df)
+mod.df.pre<-mod.df[dates<analysis$intervention_date,]
+
+inla.mod1 <- inla(y.pre ~ pc1+pc2 +month+ f(t, model = "ar1"),data=mod.df,
+    family='poisson',
+  control.predictor = list(compute = TRUE, link = 1),
+  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config=TRUE),
+                       E= rep(1, nrow(mod.df))
+)
+posterior.list<-inla.posterior.sample(n=100, inla.mod1)
+post.labels<-dimnames(posterior.list[[1]]$latent)[[1]]
+posterior.samples<- sapply(posterior.list, '[[', 'latent')
+preds.select<-grepl('Predictor',post.labels )
+posterior.preds<-exp(posterior.samples[preds.select,]) #lambda
+#now take Poisson samples withmean of lambda
+posterior.preds.counts<- matrix(rpois(n=length(posterior.preds), lambda=posterior.preds), nrow=nrow(posterior.preds), ncol=ncol(posterior.preds))
+
+posterior.preds.q<-t(apply(posterior.preds.counts,1,quantile, probs=c(0.025, 0.5, 0.975)))
+posterior.median<-as.integer(round(t(apply(posterior.preds.counts,1,median))))
+ci<- t(hdi(t(posterior.preds.counts), credMass = 0.95))
+posterior.pred.hdi<- cbind.data.frame('median'=posterior.median, ci)
+
+
+   log.rr.pointwise<- apply(posterior.preds.counts, 2, function(x)log( (mod.df$y+1)/ (x+1)) )
+   log.rr.pointwise.ci<- t(hdi(t(log.rr.pointwise), credMass = 0.95))
+   log.rr.pointwise.median<- apply(log.rr.pointwise.ci,1,median)
+   log.rr.pointwise.hdi<-cbind(log.rr.pointwise.median,log.rr.pointwise.ci)
+   # matplot(log.rr, type='l', col='gray', lty=c(2,1,2))
+   # abline(h=0, col='red')
+   
+   post.period<- which(dates>= analysis$eval_period[1]  &dates<= analysis$eval_period[2] )
+   
+   post.samples<-posterior.preds.counts[post.period,]
+
+   post.samples.sum<-apply(post.samples,2,sum)
+   obs.post.sum<- sum(mod.df$y[post.period])
+   rr.agg<-obs.post.sum/post.samples.sum
+   rr.q<-quantile(rr.agg, probs=c(0.025, 0.5, 0.975))
+   rr.hdi<-c(rr.q['50%'],hdi(rr.agg, credMass = 0.95))
+
+out.list<- list('posterior.pred.hdi'=posterior.pred.hdi, 'rr.hdi'=rr.hdi,'pca.results'=pca1,'pcs'=pcs,'inla.mod'=inla.mod1,'log.rr.pointwise.hdi'=log.rr.pointwise.hdi,'obs.y'=mod.df$y)
+
+}
+inla1<-lapply(unique(sa2$age), inla.ar1.func)
+
+```
+
+RR for evaluation period
+```{r}
+rr<-cbind.data.frame(unique(sa2$age),round(t(sapply(inla1,'[[', 'rr.hdi')),2))
+rr
+```
+
+RR for each time points
+```{r}
+pointwise.log.rr<-(sapply(inla1,'[[', 'log.rr.pointwise.hdi', simplify='array') )
+apply(exp(pointwise.log.rr),3, function(x){
+  matplot(x ,type='l', col='gray', lty=c(1,2,2), bty='l')
+  abline(h=1)
+  })
+```
+
+Observed vs expected
+```{r}
+
+predicted<-(sapply(inla1,'[[', 'posterior.pred.hdi', simplify=F) )
+obs<- sapply(inla1,'[[', 'obs.y', simplify=F)
+plot.func<-function(pred.ds, obs.ds){
+    matplot(pred.ds ,type='l', col='gray', lty=c(1,2,2), bty='l')
+  points(obs.ds, pch=16)
+  abline(h=1)
+}
+mapply(plot.func, pred.ds=predicted, obs.ds=obs )
+```
+
+
+
+look at the PCs
+```{r}
+#library(devtools)
+#install_github("vqv/ggbiplot")
+#library(ggbiplot)
+pcas<-lapply(inla1,'[[', 'pca.results')
+lapply(pcas,ggbiplot )
+#ggbiplot(pca1)
+#screeplot(pca1)
+```
+
+

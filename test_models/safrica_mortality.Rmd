@@ -65,7 +65,7 @@ This Rmd file contains analyses of the data from S Africa. It uses a slightly di
    sa2<-cbind.data.frame(sa1[, which(names(sa1) %in% c('Pneum','date','age')  )], sa.covars)
    sa2$date<-as.Date(sa1$date, '%Y-%m-%d' ) 
    
-   exclude_covar <- c('AllRes', 	'PI', 	'POth', 	'AllDiar', 	 	'Menin', 	'BactMenin', 	'Bact', 	'OtMed', 	'Mast',	'SeptArthr', "denom", "A20_B99_excl_bac", "A16", "A17", "A18", "A19", "R00_R09", "R10_R19", "R20_R39", "R40_R49", "R50_R69", "R70_R94", "R95_R99", "D50_D89")      
+   exclude_covar <- c('AllRes', 	'PI', 	'POth', 	'AllDiar', 	 	'Menin', 	'BactMenin', 	'Bact', 	'OtMed', 	'Mast',	'SeptArthr', "denom", "A20_B99_excl_bac", "A16", "A17", "A18", "A19", "R00_R09", "R10_R19", "R20_R39", "R40_R49", "R50_R69", "R70_R94", "R95_R99", "D50_D89", "R00_R99")      
 
    sa2<-sa2[,-which(names(sa2) %in% exclude_covar)]
    
@@ -75,7 +75,7 @@ This Rmd file contains analyses of the data from S Africa. It uses a slightly di
 #Plot time series
 ```{r, fig.width=8}
 unique(sa2$age)
-age_subset<-sa2[sa2$age=='19-39 years',]
+age_subset<-sa2[sa2$age=='40-64 years',]
 par(mfrow=c(1,2))
 plot(age_subset$Pneum, type='l', bty='l')
 abline(v=123, col='gray', lty=2)
@@ -86,6 +86,52 @@ abline(v=123, col='gray', lty=2)
 matplot(scale(log(age_subset[,4:20]+0.5)), type='l', bty='l')
 abline(v=123, col='gray', lty=2)
 
+
+plot(age_subset$Pneum)
+
+prePneum<-age_subset$Pneum
+prePneum[124:length(prePneum)] <-NA
+ts1<-log(age_subset$Pneum)
+plot(ts1)
+lag12<-c(rep(NA,12),ts1[1:(length(ts1)-12)])
+lag1<- c(NA,ts1[1:(length(ts1)-1)])
+log.a16<-log(age_subset$A16_A19+1)
+log.r00<-log(age_subset$R00_R99+1)
+logj00<-log(age_subset$J00_J99_excl_PI_bron+1)
+log.b20<-log(age_subset$B20_B24+1)
+
+#Lag1 and lag 12 + regressor
+mod1<-glm(prePneum~ lag12+lag1 +log.a16 , family='poisson')
+summary(mod1)
+
+#lag12 + regressor
+mod2<-glm(prePneum~ lag12+log.a16 , family='poisson')
+summary(mod2)
+
+#Monthly dummy+ regressor
+mod.ds<-cbind.data.frame(prePneum,'month'=as.factor(month(age_subset$date)), 'log.a16'=log.a16,log.r00, logj00,log.b20)
+mod3<-glm(prePneum~ month+  log.b20 +log.a16, family='quasipoisson', data=mod.ds)
+summary(mod3)
+pred3<-predict(mod3, type='response', newdata=mod.ds)
+plot(age_subset$date,age_subset$Pneum/pred3)
+abline(v=analysis$intervention_date)
+abline(h=1)
+
+#GLARMA
+library(glarma)
+Y<-prePneum[1:123]
+X<- model.matrix(~month+  log.b20  +log.a16, data=mod.ds[1:123,])
+glarmamod <- glarma(Y, X, phiLags = c(1), type = "Poi", method = "NR" , residuals = "Pearson", maxit = 100, grad = 1e-6)
+ summary(glarmamod)
+
+ 
+#lag1+lag12+ offset
+mod4<-glm(prePneum~  lag12+lag1 + offset(log.r00) , family='poisson')
+summary(mod4) 
+ 
+#pre period is 1:123
+plot(age_subset$date,age_subset$Pneum/age_subset$R00_R99)
+abline(v=analysis$intervention_date)
 ```
 
 
@@ -314,7 +360,7 @@ call.jags.mod<-function(ds.in){
   month.mat<-cbind(rep(1,nrow(month.mat)), month.mat) #add intercept
   month.mat.pre<- month.mat[ds.in[,analysis$date_name]<analysis$post_period[1] ,]
   
-  mod.txt<- source('./jags/Non_spatial-Non_lagged-iid.txt')
+  mod.txt<- source('../jags/Non_spatial-Non_lagged-iid.txt')
   mod1<-nonspace_nonlag(burnin=70000, 
                         samples=40000,
                         thin=1,
@@ -414,6 +460,349 @@ betas<-sapply(mod1, '[[', 'betas',simplify=F)
 betas<-lapply(betas, function(x) x[order(-x$post_means),])
 names(betas)
 betas[[2 ]]
+```
+
+
+
+## PCA regression+ AR1
+```{r}
+call.jags.mod.pc<-function(ds.in){  
+  exclude.cols<-c(analysis$group_name, analysis$outcome_name, analysis$date_name)
+  x<-ds.in[,-which(names(ds.in) %in% exclude.cols)]
+    
+  #Filter columsn with 0 variations in the covariate in the pre-vax period
+  x.var<-apply(x,2, function(xx) var(xx[ds.in[,analysis$date_name]<analysis$post_period[1]] ))  
+  x.var[is.na(x.var)]<-0
+  x<-x[,x.var>0] 
+  
+  x.scale<-apply(x,2, function(z) scale(log(z+0.5))) 
+  pca1<- prcomp(x.scale, center = TRUE,scale. = TRUE)
+  pcs<-pca1$x
+  x.pcs<-pcs[,1:2]
+  
+  y<-ds.in[,analysis$outcome_name] 
+  ds2<-cbind.data.frame(y, x.pcs) 
+  names(ds2)<-c(analysis$outcome_name,names(x.pcs)) 
+  ds2.pre<-ds2[ds.in[,analysis$date_name]<analysis$post_period[1] ,] 
+  ds3<-ds2 
+  ds3[,analysis$outcome_name][ds.in[,analysis$date_name]>=analysis$post_period[1]]<-NA 
+  months<-month(ds.in[,analysis$date_name]) 
+  month.mat<-dummies::dummy(months) 
+  month.mat<-month.mat[,-1]
+  month.mat<-cbind(rep(1,nrow(month.mat)), month.mat) #add intercept
+  month.mat.pre<- month.mat[ds.in[,analysis$date_name]<analysis$post_period[1] ,]
+  
+  mod.txt<- source('../jags/Non_spatial-Non_lagged-iid.txt')
+  mod1<-nonspace_nonlag(burnin=70000,  #70K for AR1
+                        samples=40000, #40K for AR1
+                        thin=1,
+                        chains=1,
+                        regularize=FALSE, 
+                        dic=FALSE,
+                        n_full=length(ds3[,analysis$outcome_name]),
+                        n_modeling=nrow(ds2.pre),
+                        y_modeling=ds3[,analysis$outcome_name],
+                        offset=rep(0, length(y)) ,
+                        z=month.mat,  #parameters not being shrunk
+                        x=ds3[,-1]
+                        )
+  
+  posterior_samples.all<-do.call(rbind,mod1[[1]])
+  post_means<-apply(posterior_samples.all, 2, median)
+  sample.labs<-names(post_means)
+  ci<-t(hdi(posterior_samples.all, credMass = 0.95))
+  row.names(ci)<-sample.labs
+  names(post_means)<-sample.labs
+  post.combo<-cbind(post_means,ci)
+  
+  post.combo.y<-post.combo[grep('Y_pred', dimnames(post.combo)[[1]]),]
+  post.combo.beta<-cbind.data.frame(post.combo[grep('beta', dimnames(post.combo)[[1]]),],dimnames(x.pcs)[[2]])
+  
+  post.combo.phi<- post.combo[grep('phi', dimnames(post.combo)[[1]]),]
+
+  # plot(y=1:nrow(post.combo.beta), x=post.combo.beta[,'post_means'], xlim=range(post.combo.beta[,1:3]), bty='l')
+  # arrows(y0=1:nrow(post.combo.beta) ,x0=post.combo.beta[,2], x1=post.combo.beta[,3], length=0)
+  # abline(v=0, col='gray', lty=2)
+  # text(y=1:nrow(post.combo.beta), x=post.combo.beta[,'post_means']+0.1,dimnames(x)[[2]] , col='gray')
+  
+  #plot for post-vax period
+  # matplot(post.combo.y, type='l')
+  #  points(ds1$sALRI[(nrow(ds2.pre)+1):nrow(ds1)])
+  # 
+    log.rr.pointwise<- log((ds.in[(nrow(ds2.pre)+1):nrow(ds.in),analysis$outcome_name]+0.5)/(post.combo.y+0.5))
+   # matplot(log.rr, type='l', col='gray', lty=c(2,1,2))
+   # abline(h=0, col='red')
+   
+   length.rollout<-round(as.numeric((analysis$eval_period[1]-analysis$post_period[1]  )/30.3))
+   post.samples<-posterior_samples.all[,-c(1:length.rollout)]
+   post.samples.y<- post.samples[,grep('Y_pred', dimnames(post.samples)[[2]])]
+
+   post.samples.sum<-apply(post.samples,1,sum)
+   obs.post.sum<- sum(ds2[,analysis$outcome_name][ds.in[,analysis$date_name]>=analysis$post_period[1]][-c(1:length.rollout)])
+   rr.agg<-obs.post.sum/post.samples.sum
+   rr.q<-quantile(rr.agg, probs=c(0.025, 0.5, 0.975))
+   output.list<-list('rr.samples'=rr.agg,'rr.q'=rr.q,'log.rr.pointwise.q'=log.rr.pointwise,'betas'=post.combo.beta,'rr.agg.iter'=rr.agg,'phi'=post.combo.phi)
+}
+
+```
+
+```{r}
+n_cores<-7
+grp.keep<-c("Less than one month", "1-11 months", "1-4 years", "5-7 years", "8-18 years","19-39 years","65-79 years" )
+
+ds.age.spl<-split(sa2, sa2$age)
+ds.age.spl<-ds.age.spl[grp.keep]
+
+  cl <- makeCluster(n_cores)
+  clusterEvalQ(cl, {
+    library(lubridate, quietly = TRUE)
+    library(HDInterval, quietly = TRUE)
+  })
+  clusterExport(cl, c('call.jags.mod.pc','analysis'), environment())
+  
+  mod1.pc<-pblapply(cl = cl,X=ds.age.spl,FUN=call.jags.mod.pc)
+stopCluster(cl)
+
+rr.samples<-sapply(mod1.pc, '[[', 'rr.samples',simplify='array')
+phi<-sapply(mod1.pc, '[[', 'phi',simplify='array')
+```
+
+
+```{r}
+rr.summary<-t(apply(rr.samples,2,quantile, probs=c(0.025,0.5,0.975)))
+rr.summary
+```
+
+```{r}
+apply(phi, 3, matplot, type='l')
+
+```
+
+Length of burn in required varies by dataset. many are fine with 15-20000 (+10K original burn). By 0K (+10K original burn) all look good. So could prob get away with a burn of 60K + 10K samples (70K)?
+```{r}
+apply(rr.samples[8000:10000,],2, function(x) plot(x,type='l'))
+```
+
+
+```{r}
+betas<-sapply(mod1.pc, '[[', 'betas',simplify=F)
+betas<-lapply(betas, function(x) x[order(-x$post_means),])
+names(betas)
+betas
+```
+
+
+
+Simple GLM model with PC1 and PC2
+```{r}
+pc.func<-function(age.select){
+  x<-sa2[sa2$age==age.select,4:40]
+  y<-  sa2[sa2$age==age.select,"Pneum"]
+  dates<-unique(sa2$date)
+  y.pre<-y
+  y.pre[dates>=analysis$intervention_date]<-NA
+  #Filter columsn with 0 variations in the covariate in the pre-vax period
+  x.var<-apply(x,2, function(xx) var(xx))  
+  x.var[is.na(x.var)]<-0
+  x<-x[,x.var>0] 
+  
+  x.scale<-apply(x,2, function(z) scale(log(z+0.5))) 
+pca1<- prcomp(x.scale, center = TRUE,scale. = TRUE)
+
+pcs<-pca1$x
+rotation<-pca1$rotation
+
+#plot(pcs[,'PC1'], type='l')
+#plot(pcs[,'PC2'], type='l')
+
+#library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+ggbiplot(pca1)
+screeplot(pca1)
+
+mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'PC1'],'pc2'=pcs[,'PC2'],'pc3'=pcs[,'PC3'],'pc4'=pcs[,'PC4'] )
+mod1<- glm(y.pre ~ pc1+pc2 +month, family='quasipoisson', data=mod.df)
+print(age.select)
+print(summary(mod1))
+pred1<-predict(mod1, type='response', newdata=mod.df)
+
+plot(dates,pred1, type='l', main=age.select)
+points(dates, y)
+
+plot(dates,y/pred1, type='l', main=age.select)
+abline(h=1)
+abline(v=analysis$intervention_date)
+}
+
+lapply(unique(sa2$age), pc.func)
+```
+
+
+GLARMA model with PC1 and PC2
+```{r}
+library(glarma)
+age.select<-unique(sa2$age)[2]
+
+pc.func<-function(age.select){
+  x<-sa2[sa2$age==age.select,4:40]
+  y<-  sa2[sa2$age==age.select,"Pneum"]
+  dates<-unique(sa2$date)
+  y.pre<-y[dates<analysis$intervention_date]
+  #Filter columsn with 0 variations in the covariate in the pre-vax period
+  x.var<-apply(x,2, function(xx) var(xx))  
+  x.var[is.na(x.var)]<-0
+  x<-x[,x.var>0] 
+  
+  x.scale<-apply(x,2, function(z) scale(log(z+0.5))) 
+  
+pca1<- prcomp(x.scale, center = TRUE,scale. = TRUE)
+
+pcs<-pca1$x
+rotation<-pca1$rotation
+
+#plot(pcs[,'PC1'], type='l')
+#plot(pcs[,'PC2'], type='l')
+
+#library(devtools)
+#install_github("vqv/ggbiplot")
+library(ggbiplot)
+ggbiplot(pca1)
+screeplot(pca1)
+
+mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'PC1'],'pc2'=pcs[,'PC2'],'pc3'=pcs[,'PC3'],'pc4'=pcs[,'PC4'] )
+#mod1<- glm(y.pre ~ pc1+pc2 +month, family='quasipoisson', data=mod.df)
+X<- model.matrix(~ month+  pc1  +pc2, data=mod.df)
+X.pre<-X[dates<analysis$intervention_date,]
+mod.df.post<-X[dates>=analysis$intervention_date,]
+  
+mod1 <- glarma(y=y.pre, X=X.pre, phiLags = c(1), type = "Poi", method = "NR" , residuals = "Pearson", maxit = 100, grad = 1e-6)
+
+print(age.select)
+print(summary(mod1))
+pred1<-forecast(mod1, type='response', newdata=mod.df.post, n.ahead = 2)
+
+plot(dates,pred1, type='l', main=age.select)
+points(dates, y)
+
+plot(dates,y/pred1, type='l', main=age.select)
+abline(h=1)
+abline(v=analysis$intervention_date)
+}
+
+lapply(unique(sa2$age), pc.func)
+```
+
+INLA AR1
+```{r}
+#install.packages("INLA", repos=c(getOption("repos"), INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+library(INLA)
+#age.select<-unique(sa2$age)[3]
+inla.ar1.func<-function(age.select){
+  x<-sa2[sa2$age==age.select,4:40]
+  y<-  sa2[sa2$age==age.select,"Pneum"]
+  dates<-unique(sa2$date)
+  y.pre<-y
+  y.pre[dates>=analysis$intervention_date]<-NA
+  #Filter columsn with 0 variations in the covariate in the pre-vax period
+  x.var<-apply(x,2, function(xx) var(xx))  
+  x.var[is.na(x.var)]<-0
+  x<-x[,x.var>0] 
+  
+  x.scale<-apply(x,2, function(z) scale(log(z+0.5))) 
+  
+pca1<- prcomp(x.scale, center = TRUE,scale. = TRUE)
+
+pcs<-pca1$x
+rotation<-pca1$rotation
+
+mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'PC1'],'pc2'=pcs[,'PC2'],'pc3'=pcs[,'PC3'],'pc4'=pcs[,'PC4'] )
+#mod1<- glm(y.pre ~ pc1+pc2 +month, family='quasipoisson', data=mod.df)
+mod.df$t<-1:nrow(mod.df)
+mod.df.pre<-mod.df[dates<analysis$intervention_date,]
+
+inla.mod1 <- inla(y.pre ~ pc1+pc2 +month+ f(t, model = "ar1"),data=mod.df,
+    family='poisson',
+  control.predictor = list(compute = TRUE, link = 1),
+  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config=TRUE),
+                       E= rep(1, nrow(mod.df))
+)
+posterior.list<-inla.posterior.sample(n=100, inla.mod1)
+post.labels<-dimnames(posterior.list[[1]]$latent)[[1]]
+posterior.samples<- sapply(posterior.list, '[[', 'latent')
+preds.select<-grepl('Predictor',post.labels )
+posterior.preds<-exp(posterior.samples[preds.select,]) #lambda
+#now take Poisson samples withmean of lambda
+posterior.preds.counts<- matrix(rpois(n=length(posterior.preds), lambda=posterior.preds), nrow=nrow(posterior.preds), ncol=ncol(posterior.preds))
+
+posterior.preds.q<-t(apply(posterior.preds.counts,1,quantile, probs=c(0.025, 0.5, 0.975)))
+posterior.median<-as.integer(round(t(apply(posterior.preds.counts,1,median))))
+ci<- t(hdi(t(posterior.preds.counts), credMass = 0.95))
+posterior.pred.hdi<- cbind.data.frame('median'=posterior.median, ci)
+
+
+   log.rr.pointwise<- apply(posterior.preds.counts, 2, function(x)log( (mod.df$y+1)/ (x+1)) )
+   log.rr.pointwise.ci<- t(hdi(t(log.rr.pointwise), credMass = 0.95))
+   log.rr.pointwise.median<- apply(log.rr.pointwise.ci,1,median)
+   log.rr.pointwise.hdi<-cbind(log.rr.pointwise.median,log.rr.pointwise.ci)
+   # matplot(log.rr, type='l', col='gray', lty=c(2,1,2))
+   # abline(h=0, col='red')
+   
+   post.period<- which(dates>= analysis$eval_period[1]  &dates<= analysis$eval_period[2] )
+   
+   post.samples<-posterior.preds.counts[post.period,]
+
+   post.samples.sum<-apply(post.samples,2,sum)
+   obs.post.sum<- sum(mod.df$y[post.period])
+   rr.agg<-obs.post.sum/post.samples.sum
+   rr.q<-quantile(rr.agg, probs=c(0.025, 0.5, 0.975))
+   rr.hdi<-c(rr.q['50%'],hdi(rr.agg, credMass = 0.95))
+
+out.list<- list('posterior.pred.hdi'=posterior.pred.hdi, 'rr.hdi'=rr.hdi,'pca.results'=pca1,'pcs'=pcs,'inla.mod'=inla.mod1,'log.rr.pointwise.hdi'=log.rr.pointwise.hdi,'obs.y'=mod.df$y)
+
+}
+inla1<-lapply(unique(sa2$age), inla.ar1.func)
+
+```
+
+RR for evaluation period
+```{r}
+rr<-cbind.data.frame(unique(sa2$age),round(t(sapply(inla1,'[[', 'rr.hdi')),2))
+rr
+```
+
+RR for each time points
+```{r}
+pointwise.log.rr<-(sapply(inla1,'[[', 'log.rr.pointwise.hdi', simplify='array') )
+apply(exp(pointwise.log.rr),3, function(x){
+  matplot(x ,type='l', col='gray', lty=c(1,2,2), bty='l')
+  abline(h=1)
+  })
+```
+Observed vs expected
+```{r}
+
+predicted<-(sapply(inla1,'[[', 'posterior.pred.hdi', simplify=F) )
+obs<- sapply(inla1,'[[', 'obs.y', simplify=F)
+plot.func<-function(pred.ds, obs.ds){
+    matplot(pred.ds ,type='l', col='gray', lty=c(1,2,2), bty='l')
+  points(obs.ds, pch=16)
+  abline(h=1)
+}
+mapply(plot.func, pred.ds=predicted, obs.ds=obs )
+```
+
+
+
+look at the PCs
+```{r}
+#library(devtools)
+#install_github("vqv/ggbiplot")
+#library(ggbiplot)
+pcas<-lapply(inla1,'[[', 'pca.results')
+lapply(pcas,ggbiplot )
+#ggbiplot(pca1)
+#screeplot(pca1)
 ```
 
 
