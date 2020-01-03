@@ -34,6 +34,7 @@ library(pbapply)
 library(parallel)
 library(plyr)
 library(ggbiplot)
+library(htmlTable)
 
 ```
 
@@ -124,7 +125,7 @@ mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'P
 mod.df$t<-1:nrow(mod.df)
 mod.df.pre<-mod.df[dates<analysis$intervention_date,]
 
-inla.mod1 <- inla(y.pre ~ pc1+ month+ f(t, model = error.structure),data=mod.df,
+inla.mod1 <- inla(y.pre ~ pc1+pc2+ month+ f(t, model = error.structure),data=mod.df,
     family='poisson',
   control.predictor = list(compute = TRUE, link = 1),
   control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config=TRUE),
@@ -192,9 +193,8 @@ rr.ar1.format<-paste(rr.ar1[,'50%'] , ' (', rr.ar1[,'lower'], ',', rr.ar1[,'uppe
 rr.iid<-round(t(sapply(inla2,'[[', 'rr.hdi')),2)
 rr.iid.format<-paste(rr.iid[,'50%'] , ' (', rr.iid[,'lower'], ',', rr.iid[,'upper'] ,')', sep='' )
 
-cbind.data.frame('Age'=unique(sa2$age),'RR (AR1)'=rr.ar1.format, 'RR (iid)'= rr.iid.format)
-#plot(rr.iid$`50%`, rr.ar1$`50%`, ylim=range(c(rr.iid$`50%`, rr.ar1$`50%`)), xlim=range(c(rr.iid$`50%`, rr.ar1$`50%`)))
-#abline(a=0, b=1)
+htmlTable(cbind.data.frame('Age'=unique(sa2$age),'RR (AR1)'=rr.ar1.format, 'RR (iid)'= rr.iid.format))
+
 ```
 
 RR for each time points
