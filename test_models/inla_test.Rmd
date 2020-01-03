@@ -124,7 +124,7 @@ mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'P
 mod.df$t<-1:nrow(mod.df)
 mod.df.pre<-mod.df[dates<analysis$intervention_date,]
 
-inla.mod1 <- inla(y.pre ~ pc1+pc2 +month+ f(t, model = error.structure),data=mod.df,
+inla.mod1 <- inla(y.pre ~ pc1+ month+ f(t, model = error.structure),data=mod.df,
     family='poisson',
   control.predictor = list(compute = TRUE, link = 1),
   control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config=TRUE),
