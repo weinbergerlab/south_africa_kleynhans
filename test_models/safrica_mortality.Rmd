@@ -49,7 +49,7 @@ title: "Estimated change associated with the introduction of vaccine in South Af
 This Rmd file contains analyses of the data from S Africa. It uses a slightly different model (Poisson) than the one described in Kleynhans et al. To see those results, see the synthetic_control_run.R file
 
 ```{r viewdata}
-   sa1<-read.csv('./Data/RSA.csv')
+   sa1<-read.csv('../Data/RSA.csv')
 
    #Filter covariates that have no variance
    sa.covars<-sa1[, -which(names(sa1) %in% c('Pneum','date','age')  )]
