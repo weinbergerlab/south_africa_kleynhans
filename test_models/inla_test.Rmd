@@ -33,6 +33,8 @@ library(lubridate)
 library(pbapply)
 library(parallel)
 library(plyr)
+library(ggbiplot)
+
 ```
 
 ---
@@ -269,7 +271,6 @@ pcas<-lapply(inla1,'[[', 'pca.results')
 ```{r}
 #library(devtools)
 #install_github("vqv/ggbiplot")
-#library(ggbiplot)
 lapply(pcas,ggbiplot )
 ```
 Scree plot: how much variation is explained by each PC? This shows first 2 components are most important
