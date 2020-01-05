@@ -8,6 +8,7 @@ output: html_document
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
+  echo=F,
   comment = "#>",
   fig.height = 3,
   fig.width = 5,
@@ -35,6 +36,7 @@ library(parallel)
 library(plyr)
 library(ggbiplot)
 library(htmlTable)
+library(nFactors)
 
 ```
 
@@ -46,6 +48,8 @@ title: "Estimated change associated with the introduction of vaccine in South Af
 ## Important note
 This Rmd file contains analyses of the data from S Africa. It uses a slightly different model (Poisson) than the one described in Kleynhans et al. To see those results, see the synthetic_control_run.R file
 
+Local linear trend:
+https://www.sciencedirect.com/science/article/pii/S0167947311003999?via%3Dihub
 
 ## Prepare the dataset
 ```{r viewdata}
@@ -118,31 +122,57 @@ inla.ar1.func<-function(age.select, error.structure){
 pca1<- prcomp(x.scale, center = TRUE,scale. = TRUE)
 
 pcs<-pca1$x
+n.pcs.keep<-nScree(pca1$sdev)$Components$naf  #Based on acceleration of 2nd derivative
 rotation<-pca1$rotation
 
-mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y,'pc1'=pcs[,'PC1'],'pc2'=pcs[,'PC2'],'pc3'=pcs[,'PC3'],'pc4'=pcs[,'PC4'] )
+mod.df<-cbind.data.frame(y.pre, 'month'=as.factor(month(dates)), y, pcs[,1:n.pcs.keep, drop=F] )
 #mod1<- glm(y.pre ~ pc1+pc2 +month, family='quasipoisson', data=mod.df)
 mod.df$t<-1:nrow(mod.df)
-mod.df.pre<-mod.df[dates<analysis$intervention_date,]
+mod.df$t2<-1:nrow(mod.df)
 
-inla.mod1 <- inla(y.pre ~ pc1+pc2+ month+ f(t, model = error.structure),data=mod.df,
+covar.df<-cbind.data.frame( pcs[,1:n.pcs.keep, drop=F],'month'=as.factor(month(dates)) )
+x.in<-model.matrix(~. , data=covar.df)
+
+mod.df.pre<-mod.df[dates<analysis$intervention_date,]
+if(error.structure=='ar1'){
+  form1<-as.formula( paste0("y.pre ~", paste(names(covar.df), collapse='+'), "+ f(t, model = 'iid') + f(t2, model = 'rw1')"  ) )
+}else{
+  form1<-as.formula( paste0("y.pre ~", paste(names(covar.df), collapse='+'), "+ f(t, model = 'iid')"  ) )
+}
+
+inla.mod1 <- inla( form1,data=mod.df,
     family='poisson',
   control.predictor = list(compute = TRUE, link = 1),
   control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE, config=TRUE),
                        E= rep(1, nrow(mod.df))
 )
-posterior.list<-inla.posterior.sample(n=100, inla.mod1)
+
+posterior.list<-inla.posterior.sample(n=1000, inla.mod1)
 post.labels<-dimnames(posterior.list[[1]]$latent)[[1]]
 posterior.samples<- sapply(posterior.list, '[[', 'latent')
 preds.select<-grepl('Predictor',post.labels )
-rand.eff.select.t<-which(substr(post.labels,1,2 )=='t:')
+rand.eff.select.t1<-which(substr(post.labels,1,2 )=='t:')
+rand.eff.select.t2<-which(substr(post.labels,1,3 )=='t2:')
+covar.select<-c(grep('Intercept',post.labels ),grep('PC',post.labels , fixed=T),grep('month',post.labels ) )
+
 betas<-inla.mod1$summary.fixed$mean
+
+beta.posterior<-(posterior.samples[covar.select,]) 
+
+fixed.effect<- x.in[,-1] %*% beta.posterior[-1,] #fixed piece of regression, excluding intercept
+fixed.effect.hdi<-t(hdi(t(fixed.effect), credMass = 0.95))
+fixed.effect.median<-apply(fixed.effect,1, median)
+fixed.effect.hdi<-cbind.data.frame('median'=fixed.effect.median, fixed.effect.hdi)
+
 posterior.preds<-exp(posterior.samples[preds.select,]) #lambda
 #now take Poisson samples withmean of lambda
 posterior.preds.counts<- matrix(rpois(n=length(posterior.preds), lambda=posterior.preds), nrow=nrow(posterior.preds), ncol=ncol(posterior.preds))
 
-rand.eff.t<-posterior.samples[rand.eff.select.t,]
-rand.eff.q<-t(apply(rand.eff.t, 1, quantile, probs=c(0.025,0.5,0.975)))
+rand.eff.t1<-posterior.samples[rand.eff.select.t1,]
+rand.eff1.q<-t(apply(rand.eff.t1, 1, quantile, probs=c(0.025,0.5,0.975)))
+
+rand.eff.t2<-posterior.samples[rand.eff.select.t2,]
+rand.eff2.q<-t(apply(rand.eff.t2, 1, quantile, probs=c(0.025,0.5,0.975)))
    
 posterior.preds.q<-t(apply(posterior.preds.counts,1,quantile, probs=c(0.025, 0.5, 0.975)))
 posterior.median<-as.integer(round(t(apply(posterior.preds.counts,1,median))))
@@ -150,9 +180,17 @@ ci<- t(hdi(t(posterior.preds.counts), credMass = 0.95))
 posterior.pred.hdi<- cbind.data.frame('median'=posterior.median, ci)
 
 if(error.structure=='ar1'){
-  rho<-inla.mod1$summary.hyperpar[2,c('0.5quant','0.025quant', '0.975quant')]
+  rho1<-inla.mod1$summary.hyperpar[2,c('0.5quant','0.025quant', '0.975quant')]
+
+    rho2<-inla.mod1$summary.hyperpar[2,c('0.5quant','0.025quant', '0.975quant')]
+    
+    rand.eff.combined<-rand.eff.t1 +rand.eff.t2
+    rand.eff.combined.q<-t(apply(rand.eff.combined, 1, quantile, probs=c(0.025,0.5,0.975)))
+
 }else{
-   rho=NA
+   rho1=NA
+   rho2=NA
+  rand.eff.combined.q=NA
 }
 
    log.rr.pointwise<- apply(posterior.preds.counts, 2, function(x)log( (mod.df$y+1)/ (x+1)) )
@@ -172,7 +210,7 @@ if(error.structure=='ar1'){
    rr.q<-quantile(rr.agg, probs=c(0.025, 0.5, 0.975))
    rr.hdi<-c(rr.q['50%'],hdi(rr.agg, credMass = 0.95))
 
-out.list<- list('posterior.pred.hdi'=posterior.pred.hdi, 'rr.hdi'=rr.hdi,'pca.results'=pca1,'pcs'=pcs,'inla.mod'=inla.mod1,'log.rr.pointwise.hdi'=log.rr.pointwise.hdi,'obs.y'=mod.df$y,'rand.eff.q'=rand.eff.q,'rho'=rho,'betas'=betas, 'post.period.start.index'=post.period[1])
+out.list<- list('posterior.pred.hdi'=posterior.pred.hdi, 'rr.hdi'=rr.hdi,'pca.results'=pca1,'pcs'=pcs,'inla.mod'=inla.mod1,'log.rr.pointwise.hdi'=log.rr.pointwise.hdi,'obs.y'=mod.df$y,'rand.eff1.q'=rand.eff1.q,'rand.eff2.q'=rand.eff2.q,'betas'=betas, 'post.period.start.index'=post.period[1], 'rand.eff.t1'=rand.eff.t1, 'rand.eff.t2'=rand.eff.t2,'rand.eff.combined.q'=rand.eff.combined.q, 'fixed.effect'=fixed.effect.hdi, 'n.pcs.keep'=n.pcs.keep)
 
 }
 ```
@@ -196,6 +234,22 @@ rr.iid.format<-paste(rr.iid[,'50%'] , ' (', rr.iid[,'lower'], ',', rr.iid[,'uppe
 htmlTable(cbind.data.frame('Age'=unique(sa2$age),'RR (AR1)'=rr.ar1.format, 'RR (iid)'= rr.iid.format))
 
 ```
+
+trajectory of the iid and RW components of the random effect. this confirms that the random draws for the RW of the RE in the post-vaccine period is following a time series 
+```{r, fig.width=8, fig.height=4}
+rand.eff.t1<-sapply(inla1,'[[', 'rand.eff.t1', simplify='array')
+rand.eff.t2<-sapply(inla1,'[[', 'rand.eff.t2', simplify='array')
+
+dates<-unique(sa2$date)
+par(mfrow=c(1,2))
+intro.index<-which(dates== analysis$post_period[1])
+matplot(rand.eff.t1[,1:5,1], type='l')
+abline(v=intro.index)
+matplot(rand.eff.t2[,1:5,1], type='l')
+abline(v=intro.index)
+```
+
+
 
 RR for each time points
 ```{r, fig.width=8, fig.height=4}
@@ -253,25 +307,42 @@ rr.plotfunc<-function(ar1, iid, title){
   matplot(iid ,type='l', col='gray', lty=c(1,2,2), bty='l', ylim=plot.range)
   abline(h=0)
   }
-rand.eff.ar1<-sapply(inla1,'[[', "rand.eff.q" , simplify='array')
-rand.eff.iid<-(sapply(inla2,'[[', "rand.eff.q" , simplify='array') )
+rand.eff.ar1<-sapply(inla1,'[[', "rand.eff.combined.q" , simplify='array')
+
+rand.eff.iid<-(sapply(inla2,'[[', "rand.eff1.q" , simplify='array') )
 
 for(i in 1:dim(rand.eff.ar1)[3]){
 rr.plotfunc( ar1=rand.eff.ar1[,,i], iid=rand.eff.iid[,,i], title=unique(sa2$age)[i])
 }
 ```
 
+FOR AR1 model compare the regression piece and AR1 piece side by side
+```{r}
+rr.plotfunc<-function(ar1, reg, title){
+   par(mfrow=c(1,2))
+   plot.range<-range(c(ar1,reg))
+  matplot(ar1 ,type='l', col='gray', lty=c(1,2,2), bty='l',main=title, ylim=plot.range)
+  abline(h=0)
+  
+  matplot(reg ,type='l', col='gray', lty=c(1,2,2), bty='l', ylim=plot.range)
+  abline(h=0)
+  }
+rand.eff.ar1<-sapply(inla1,'[[', "rand.eff.combined.q" , simplify='array')
+fixed.effect.piece<-sapply(inla1,'[[', "fixed.effect" , simplify=F)
 
+for(i in 1:dim(rand.eff.ar1)[3]){
+rr.plotfunc( ar1=rand.eff.ar1[,,i], reg=fixed.effect.piece[[i]], title=unique(sa2$age)[i])
+}
+```
 look at the PCs
 ```{r}
 pcas<-lapply(inla1,'[[', 'pca.results')
 ```
 
-
+How many PCs were used in the model in each group? use Kaiser rule to decide 
 ```{r}
-#library(devtools)
-#install_github("vqv/ggbiplot")
-lapply(pcas,ggbiplot )
+n.pcs<-sapply(inla1,'[[', 'n.pcs.keep')
+htmlTable(cbind.data.frame('Age'=(unique(sa2$age)),'N PCA keep'=n.pcs))
 ```
 Scree plot: how much variation is explained by each PC? This shows first 2 components are most important
 ```{r}
@@ -279,5 +350,8 @@ lapply(pcas,screeplot )
 
 ```
 
-
-
+```{r}
+#library(devtools)
+#install_github("vqv/ggbiplot")
+lapply(pcas,ggbiplot )
+```
